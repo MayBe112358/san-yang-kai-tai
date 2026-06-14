@@ -171,6 +171,7 @@
     <div class="stat" id="timeStat"><small>⏱</small><span id="time">00:00</span></div>
     <div id="lvlName">三羊开泰</div>
     <div class="stat" id="moveStat"><small>步</small><span id="moves">0</span></div>
+    <button class="muteBtn" id="anchorBtn" title="主播认证">🎤</button>
     <button class="muteBtn" id="muteBtn" title="音效">🔊</button>
   </div>
 
@@ -225,6 +226,20 @@
       <button class="btn ghost" id="homeBtn">关卡选择</button>
     </div>
   </div>
+
+  <!-- Anchor (主播) mode -->
+  <div class="overlay hidden" id="anchorScreen">
+    <div class="panel">
+      <div class="big">🎤</div>
+      <h1 style="font-size:22px;">主播模式</h1>
+      <div class="sub" id="anchorStatus">输入主播认证码，解锁道具无限使用</div>
+      <input id="anchorInput" inputmode="numeric" autocomplete="off" placeholder="请输入认证码"
+        style="width:100%;padding:12px;border-radius:14px;border:2px solid #f0c987;font-size:20px;
+        text-align:center;font-family:inherit;letter-spacing:6px;margin:4px 0 6px;outline:none;background:#fffdf6;">
+      <button class="btn green" id="anchorOk">认证 ✅</button>
+      <button class="btn ghost" id="anchorClose">关闭</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -246,6 +261,9 @@ let timer = null, seconds = 0, started = false;
 let history = [];       // 撤回快照
 let muted = false;
 let props = {hint:3, undo:3, shuffle:1, takeout:1};
+const AD_LIMIT = 2;                 // 每关最多看广告次数
+const ANCHOR_CODE = "112358";       // 主播认证码
+let anchorMode = localStorage.getItem("syktAnchor")==="1";  // 主播模式：道具无限
 
 const $ = id => document.getElementById(id);
 const boardEl = $("board"), slotsEl = $("slots"), fxEl = $("fx");
@@ -487,23 +505,28 @@ function pushHistory(){
   });
   if(history.length>50) history.shift();
 }
+// 统一的道具消耗：主播模式无限；否则扣 1，扣不动就触发看广告
+function tryConsume(prop){
+  if(anchorMode) return true;
+  if(props[prop]>0){ props[prop]--; updateBadges(); return true; }
+  adGain(prop);   // 道具用尽 → 看广告补充（需用户再点一次）
+  return false;
+}
 function doUndo(){
-  if(props.undo<=0){ adGain("undo"); return; }
   if(history.length===0){ toast("没有可撤回的操作"); return; }
+  if(!tryConsume("undo")) return;
   const snap=history.pop();
   const map={};snap.cards.forEach(s=>map[s.id]=s);
   state.cards.forEach(c=>{c.icon=map[c.id].icon;c.removed=map[c.id].removed;});
   state.slots=snap.slots.map(s=>({...s}));
   state.moves=snap.moves;
   $("moves").textContent=state.moves;
-  props.undo--; updateBadges();
   sfx.prop();
   renderBoard(); renderSlots();
 }
 
 /* ===================== 道具 ===================== */
 function doHint(){
-  if(props.hint<=0){ adGain("hint"); return; }
   clearHint();
   // 优先：槽里已有 1~2 个的图标，且台面有可点的同类
   const slotCount={};state.slots.forEach(s=>slotCount[s.icon]=(slotCount[s.icon]||0)+1);
@@ -517,9 +540,10 @@ function doHint(){
     if(score>bestScore){bestScore=score;best=c;}
   }
   if(best){
+    if(!tryConsume("hint")) return;
     best.el.classList.add("hintGlow");
     best._hint=true;
-    props.hint--; updateBadges(); sfx.prop();
+    sfx.prop();
     setTimeout(clearHint,2500);
   }
 }
@@ -527,19 +551,19 @@ function clearHint(){
   state && state.cards.forEach(c=>{if(c.el)c.el.classList.remove("hintGlow");c._hint=false;});
 }
 function doShuffle(){
-  if(props.shuffle<=0){ adGain("shuffle"); return; }
+  if(!tryConsume("shuffle")) return;
   const remain=state.cards.filter(c=>!c.removed);
   const icons=remain.map(c=>c.icon);
   for(let i=icons.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[icons[i],icons[j]]=[icons[j],icons[i]];}
   remain.forEach((c,i)=>c.icon=icons[i]);
-  props.shuffle--; updateBadges(); sfx.prop();
+  sfx.prop();
   pushHistory();
   renderBoard();
   toast("已重新洗牌 🔀");
 }
 function doTakeout(){
-  if(props.takeout<=0){ adGain("takeout"); return; }
   if(state.slots.length===0){ toast("槽位是空的"); return; }
+  if(!tryConsume("takeout")) return;
   pushHistory();
   // 取出槽位前 3 张（或全部）放回台面顶层
   const take=state.slots.splice(0, Math.min(3,state.slots.length));
@@ -551,18 +575,29 @@ function doTakeout(){
       x:Math.min(maxX,40+i*(CARD+8)), y:Math.min(maxY,maxY-CARD*0.2),
       layer:baseLayer+i, removed:false});
   });
-  props.takeout--; updateBadges(); sfx.prop();
+  sfx.prop();
   renderBoard(); renderSlots();
   toast("移出 3 张到台面 💣");
 }
 function adGain(prop){
-  // 模拟“看广告获得”
-  showAd(()=>{ props[prop]+=1; updateBadges(); toast("观看广告 +1 道具 🎁"); });
+  if(anchorMode) return;          // 主播模式无限，无需广告
+  if(!state) return;
+  if((state.adViews||0) >= AD_LIMIT){
+    toast("本关广告已看 "+AD_LIMIT+" 次，开主播模式 🎤 可无限使用");
+    return;
+  }
+  // 模拟“看广告获得”（30 秒）
+  showAd(()=>{
+    state.adViews=(state.adViews||0)+1;
+    props[prop]+=1; updateBadges();
+    toast("观看广告 +1 道具（本关 "+state.adViews+"/"+AD_LIMIT+"）🎁");
+  });
 }
 function updateBadges(){
   ["hint","undo","shuffle","takeout"].forEach(p=>{
     const b=$("b-"+p);
-    if(props[p]>0){ b.textContent=props[p]; b.classList.remove("ad"); }
+    if(anchorMode){ b.textContent="∞"; b.classList.remove("ad"); }
+    else if(props[p]>0){ b.textContent=props[p]; b.classList.remove("ad"); }
     else{ b.textContent="AD"; b.classList.add("ad"); }
   });
 }
@@ -605,6 +640,7 @@ function startGame(idx){
   curLevel=idx;
   state=buildLevel(idx);
   state.moves=0;
+  state.adViews=0;          // 每关广告次数清零
   history=[];
   props={hint:3,undo:3,shuffle:1,takeout:1};
   seconds=0;started=false;stopTimer();
@@ -669,22 +705,65 @@ function buildLevelGrid(){
 function showAd(cb){
   const ov=document.createElement("div");
   ov.className="overlay";ov.style.zIndex=2000;
+  const total=30; // 30 秒广告
   ov.innerHTML=`<div class="panel"><div class="big">📺</div><h1 style="font-size:22px;">观看广告</h1>
-    <div class="sub" id="adCount">广告播放中… 3</div>
-    <button class="btn ghost" id="adSkip" disabled style="opacity:.5;">请稍候…</button></div>`;
+    <div class="sub" id="adCount">广告播放中… ${total}s</div>
+    <div style="height:9px;background:#eadbc0;border-radius:6px;overflow:hidden;margin:4px 0 14px;">
+      <div id="adBar" style="height:100%;width:0;background:linear-gradient(90deg,#ff9a6b,#ff6f91);transition:width 1s linear;"></div>
+    </div>
+    <button class="btn ghost" id="adSkip" disabled style="opacity:.5;">请稍候…（${total}s）</button></div>`;
   $("app").appendChild(ov);
-  let n=3;const ac=ov.querySelector("#adCount");
-  const itv=setInterval(()=>{n--;ac.textContent="广告播放中… "+n;
-    if(n<=0){clearInterval(itv);ac.textContent="广告结束！";
-      const sk=ov.querySelector("#adSkip");sk.disabled=false;sk.style.opacity=1;sk.textContent="领取奖励 🎁";
-      sk.onclick=()=>{ov.remove();cb&&cb();};}
-  },700);
+  let n=total;
+  const ac=ov.querySelector("#adCount"), bar=ov.querySelector("#adBar"), sk=ov.querySelector("#adSkip");
+  requestAnimationFrame(()=>{bar.style.width="3%";});
+  const itv=setInterval(()=>{
+    n--;
+    bar.style.width=((total-n)/total*100)+"%";
+    if(n>0){ ac.textContent="广告播放中… "+n+"s"; sk.textContent="请稍候…（"+n+"s）"; }
+    else{
+      clearInterval(itv);
+      ac.textContent="广告结束！";
+      sk.disabled=false; sk.style.opacity=1; sk.textContent="领取奖励 🎁";
+      sk.onclick=()=>{ ov.remove(); cb&&cb(); };
+    }
+  },1000);
 }
 
 /* ===================== 覆盖层切换 ===================== */
 function show(id){$(id).classList.remove("hidden");}
 function hide(id){$(id).classList.add("hidden");}
-function hideAll(){["startScreen","levelScreen","endScreen"].forEach(hide);}
+function hideAll(){["startScreen","levelScreen","endScreen","anchorScreen"].forEach(hide);}
+
+/* ===================== 主播模式 ===================== */
+function openAnchor(){
+  const st=$("anchorStatus"), inp=$("anchorInput"), ok=$("anchorOk");
+  if(anchorMode){
+    st.textContent="主播模式已开启 · 道具无限使用中 🎉";
+    inp.style.display="none";
+    ok.textContent="退出主播模式"; ok.className="btn primary";
+  }else{
+    st.textContent="输入主播认证码，解锁道具无限使用";
+    inp.style.display=""; inp.value="";
+    ok.textContent="认证 ✅"; ok.className="btn green";
+  }
+  show("anchorScreen");
+  if(!anchorMode) setTimeout(()=>inp.focus(),50);
+}
+function applyAnchor(){
+  if(anchorMode){ // 退出
+    anchorMode=false; localStorage.removeItem("syktAnchor");
+    updateBadges(); hide("anchorScreen"); toast("已退出主播模式");
+    return;
+  }
+  const v=($("anchorInput").value||"").trim();
+  if(v===ANCHOR_CODE){
+    anchorMode=true; localStorage.setItem("syktAnchor","1");
+    updateBadges(); hide("anchorScreen"); sfx.win();
+    toast("主播模式已开启 · 道具无限 🎤");
+  }else{
+    toast("认证码错误，请重试");
+  }
+}
 
 /* ===================== 事件绑定 ===================== */
 $("playBtn").onclick=()=>startGame(getUnlocked());
@@ -700,6 +779,10 @@ $("shareBtn").onclick=()=>{
   else toast(txt);
 };
 $("muteBtn").onclick=()=>{muted=!muted;$("muteBtn").textContent=muted?"🔇":"🔊";};
+$("anchorBtn").onclick=openAnchor;
+$("anchorOk").onclick=applyAnchor;
+$("anchorClose").onclick=()=>hide("anchorScreen");
+$("anchorInput").addEventListener("keydown",e=>{ if(e.key==="Enter") applyAnchor(); });
 document.querySelectorAll(".prop").forEach(btn=>{
   btn.onclick=()=>{
     const p=btn.dataset.prop;
