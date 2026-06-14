@@ -1,0 +1,7 @@
+# Dev-only preview config
+.claude/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.log
