@@ -172,6 +172,7 @@
     <div id="lvlName">三羊开泰</div>
     <div class="stat" id="moveStat"><small>步</small><span id="moves">0</span></div>
     <button class="muteBtn" id="anchorBtn" title="主播认证">🎤</button>
+    <button class="muteBtn" id="hapticBtn" title="震动">📳</button>
     <button class="muteBtn" id="muteBtn" title="音效">🔊</button>
   </div>
 
@@ -260,6 +261,7 @@ let curLevel = 0;
 let timer = null, seconds = 0, started = false;
 let history = [];       // 撤回快照
 let muted = false;
+let hapticsOn = localStorage.getItem("syktHaptic")!=="0";  // 震动反馈（默认开）
 let props = {hint:3, undo:3, shuffle:1, takeout:1};
 const AD_LIMIT = 2;                 // 每关最多看广告次数
 const ANCHOR_CODE = "112358";       // 主播认证码
@@ -289,6 +291,42 @@ const sfx={
   lose:()=>{[400,330,260].forEach((f,i)=>setTimeout(()=>beep(f,.3,"sawtooth",.18),i*160));},
   prop:()=>beep(720,.1,"square",.13),
 };
+
+/* ===================== 震动反馈（iPhone & Android）=====================
+   iOS Safari 不支持 navigator.vibrate，用隐藏 <input switch> 点击触发触感
+   （iOS 17.4+）；Android/支持的浏览器走标准 Vibration API。            */
+const haptics=(function(){
+  let label=null, inited=false;
+  function init(){
+    if(inited) return; inited=true;
+    try{
+      label=document.createElement("label");
+      label.setAttribute("aria-hidden","true");
+      label.style.display="none";
+      const inp=document.createElement("input");
+      inp.type="checkbox"; inp.setAttribute("switch","");
+      label.appendChild(inp);
+      document.head.appendChild(label);
+    }catch(e){ label=null; }
+  }
+  function iosTick(times){            // iOS：连点开关模拟轻/重不同强度
+    if(!label) return;
+    let i=0;
+    (function go(){ try{label.click();}catch(e){} if(++i<times) setTimeout(go,55); })();
+  }
+  function fire(vibePattern, iosTimes){
+    if(!hapticsOn) return;
+    init();
+    if(navigator.vibrate){ try{ navigator.vibrate(vibePattern); return; }catch(e){} }
+    iosTick(iosTimes);                // iOS 回退
+  }
+  return {
+    init,
+    light(){ fire(12, 1); },                 // 点击：轻
+    success(){ fire([0,25,40,40], 2); },     // 消除：成功型双震
+    heavy(){ fire([0,45,35,70], 3); },       // 胜负：强
+  };
+})();
 
 /* ===================== 关卡生成 ===================== */
 function buildLevel(idx){
@@ -416,6 +454,7 @@ function onCardClick(c){
   startTimer();
   pushHistory();
   sfx.click();
+  haptics.light();      // 点击震动
   clearHint();
   busy=true;
   c.removed=true;
@@ -474,6 +513,7 @@ function resolveSlots(){
   if(target){
     busy=true;
     sfx.clear();
+    haptics.success();   // 消除震动
     const uids=[]; let n=0;
     state.slots.forEach(s=>{ if(s.icon===target && n<3){ uids.push(s.uid); n++; } });
     uids.forEach(uid=>{
@@ -651,7 +691,7 @@ function startGame(idx){
   hideAll();
 }
 function win(){
-  stopTimer();sfx.win();
+  stopTimer();sfx.win();haptics.heavy();
   // 解锁下一关
   const unlocked=getUnlocked();
   if(curLevel+1>unlocked && curLevel+1<LEVELS.length) setUnlocked(curLevel+1);
@@ -663,7 +703,7 @@ function win(){
   show("endScreen");
 }
 function lose(){
-  stopTimer();sfx.lose();
+  stopTimer();sfx.lose();haptics.heavy();
   $("endIcon").textContent="😵";
   $("endTitle").textContent="槽位满了！";
   $("endSub").innerHTML=`再接再厉～试试道具<br>用时 ${fmt(seconds)} · ${state.moves} 步`;
@@ -779,6 +819,13 @@ $("shareBtn").onclick=()=>{
   else toast(txt);
 };
 $("muteBtn").onclick=()=>{muted=!muted;$("muteBtn").textContent=muted?"🔇":"🔊";};
+$("hapticBtn").onclick=()=>{
+  hapticsOn=!hapticsOn;
+  localStorage.setItem("syktHaptic",hapticsOn?"1":"0");
+  $("hapticBtn").style.opacity=hapticsOn?"1":".4";
+  if(hapticsOn) haptics.light();   // 开启时给一下反馈
+  toast(hapticsOn?"震动已开启 📳":"震动已关闭");
+};
 $("anchorBtn").onclick=openAnchor;
 $("anchorOk").onclick=applyAnchor;
 $("anchorClose").onclick=()=>hide("anchorScreen");
@@ -795,6 +842,7 @@ document.querySelectorAll(".prop").forEach(btn=>{
 // 防止移动端双击缩放
 document.addEventListener("dblclick",e=>e.preventDefault(),{passive:false});
 
+$("hapticBtn").style.opacity=hapticsOn?"1":".4";
 updateBadges();
 </script>
 </body>
